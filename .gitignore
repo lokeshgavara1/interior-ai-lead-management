@@ -1,0 +1,21 @@
+# Dependencies and builds
+node_modules/
+dist/
+coverage/
+*.log
+
+# Secrets — never commit (templates like .env.example are fine)
+.env
+.env.*
+!.env.example
+deploy/secrets/
+*.pem
+*service-account*.json
+google-sa*.json
+
+# Editor / OS / Office lock files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+~$*
