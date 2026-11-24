@@ -6,6 +6,7 @@ so one deployment can serve many interior businesses.
 
 | Document | For |
 |---|---|
+| [docs/Client_Setup_and_Deployment_Guide.docx](docs/Client_Setup_and_Deployment_Guide.docx) | Client-facing: credentials checklist, step-by-step deployment, go-live checks |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setting up Supabase, Meta, Google Sheets, the server; go-live checklist |
 | [docs/TESTING_REPORT.md](docs/TESTING_REPORT.md) | Automated results, spec §12 mapping, live test plan |
 | [docs/HANDOVER.md](docs/HANDOVER.md) | Business owner and sales team: daily use, Sheet, settings, troubleshooting |
