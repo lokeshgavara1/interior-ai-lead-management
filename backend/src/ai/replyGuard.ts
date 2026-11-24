@@ -42,11 +42,15 @@ export function fixRunOn(reply: string): string {
   return reply.replace(/([a-z0-9)])\s+(Is|Are|Do|Does|Could|Would|May|What|When|Which|Where|How|Can|Will)\s/g, '$1. $2 ');
 }
 
-/** Split into sentences without breaking decimals like "1.5". */
+/** Abbreviations that end with a dot but don't end a sentence. */
+const ABBREVIATIONS = /\b(e\.g|i\.e|etc|approx|rs|no|sq|ft|mr|mrs|ms|dr|vs)\.(?=\s)/gi;
+
+/** Split into sentences without breaking decimals ("1.5") or abbreviations ("e.g. 3BHK"). */
 export function sentencesOf(text: string): string[] {
   return text
+    .replace(ABBREVIATIONS, (m) => m.replace(/\./g, '․'))
     .split(/(?<=[.!?])\s+(?=["'(\p{Lu}\d])/u)
-    .map((s) => s.trim())
+    .map((s) => s.replace(/․/g, '.').trim())
     .filter(Boolean);
 }
 
@@ -61,6 +65,9 @@ const ESTIMATE_TALK = /\b(estimate|breakdown|approximate costs?|rough (cost|idea
 
 /** Customer asked about money -> the quotation line is the right answer. */
 export const PRICE_QUESTION = /\b(price|pricing|cost|costs|rate|rates|charges?|quote|quotation|estimate|how much|budget range|per sq)/i;
+export function hasBookingClaim(reply: string): boolean {
+  return BOOKING_CLAIM.test(reply);
+}
 export const VISIT_LINE = 'Our team will call you to confirm a convenient time for the site visit.';
 
 export interface GuardResult {

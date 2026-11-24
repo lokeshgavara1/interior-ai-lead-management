@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "chat": "tsx src/cli/chat.ts"
+    "chat": "tsx src/cli/chat.ts",
+    "test:live": "tsx src/cli/liveTest.ts"
   },
   "engines": {
     "node": ">=20"

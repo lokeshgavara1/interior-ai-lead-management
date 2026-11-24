@@ -13,11 +13,12 @@ export function buildSystemPrompt(
   today: string,
   channel: Channel = 'whatsapp',
   isFirstReply = true,
+  skipped: Set<string> = new Set(),
 ): string {
-  // The code tells the model exactly which details are already known, so even
-  // small models don't re-ask answered questions.
-  const items = itemsFor(channel).map((i) => ({ item: i.item, known: i.known(lead) }));
-  const list = items.map((i) => `${i.known ? '[x]' : '[ ]'} ${i.item}`).join('\n');
+  // The code tells the model exactly which details are already known (or skipped by
+  // the customer), so even small models don't re-ask answered questions.
+  const items = itemsFor(channel).map((i) => ({ item: i.item, known: i.known(lead) || skipped.has(i.id), skipped: skipped.has(i.id) && !i.known(lead) }));
+  const list = items.map((i) => `${i.skipped ? '[-]' : i.known ? '[x]' : '[ ]'} ${i.item}${i.skipped ? ' (customer preferred not to say — do not ask again)' : ''}`).join('\n');
   const allKnown = items.every((i) => i.known);
   const known = {
     customer_name: lead.customer_name,
@@ -38,14 +39,15 @@ export function buildSystemPrompt(
 TODAY: ${today} (timezone ${tenant.timezone})
 CHANNEL: ${CHANNEL_NOTES[channel] ?? channel}
 
-CHECKLIST ([x] = already known, [ ] = still needed)
+CHECKLIST ([x] = already known, [-] = customer skipped it, [ ] = still needed)
 ${list}
 
 HOW TO WRITE YOUR REPLY
 - ${isFirstReply ? 'This is your first reply: greet the customer briefly.' : 'Do NOT greet again and do NOT introduce the company again — the conversation is already going.'}
 - Briefly acknowledge what the customer just said (a few words).
 - ${allKnown ? 'Everything is collected: thank them and say the design team will contact them shortly to arrange the next step.' : 'Then ask exactly ONE question: the first [ ] item above that the customer has NOT already answered (also check their latest message — if it answers that item, move to the next [ ] item).'}
-- Never ask about an [x] item. Never ask two questions. No lists. Maximum 2 short sentences.
+- Never ask about an [x] or [-] item. Never ask two questions. No lists. Maximum 2 short sentences.
+- If the customer doesn't want to answer something, accept it politely and move on.
 
 GOOD EXAMPLES (vary your wording; never repeat a sentence from your earlier messages)
 Customer: "Gachibowli" -> Reply: "Thanks! Is your flat ready for interior work, or is construction still going on?"

@@ -20,7 +20,7 @@ import { resolveTimeline } from '../lib/timeline.js';
 
 const EVIDENCE = {
   property_type: {
-    apartment: /\b(flat|apartment|apt|bhk|gated|tower|society|condo)\b/,
+    apartment: /\b(flat|apartment|apt|gated|tower|society|condo)\b|bhk\b/,
     villa: /\bvilla/,
     independent_house: /\b(independent|house|duplex|bungalow|individual|g\+\d)\b/,
     commercial: /\b(office|shop|commercial|showroom|restaurant|clinic|store|cafe)\b/,
@@ -41,7 +41,8 @@ const EVIDENCE = {
   },
 } as const;
 
-const SITE_VISIT = /\b(visit|come (and )?(see|check)|come over|come home|inspect|measure|measurement|site)\b/;
+const SITE_VISIT =
+  /\b(visit|come (and )?(see|check)|come over|come home|come (by|tomorrow|today|on|at|this|next)|inspect|measure|measurement|site)\b|\b(designer|someone|team|you) (can |could |to )?come\b/i;
 const BUDGET_HINT = /\d|lakh|lac|crore|\bcr\b|\bk\b|₹|\brs\b/;
 
 function digits(s: string) {
@@ -154,9 +155,58 @@ export function fillAskedSlot(turn: AiTurn, itemId: string | null, answer: strin
   return t;
 }
 
-/** Facts that are safe to read straight from any customer message (timeline phrases, explicit rupee amounts). */
-function fillObviousSlots(turn: AiTurn, latest: string, today: string): AiTurn {
+/**
+ * Facts that are safe to read straight from any customer message: timeline phrases,
+ * explicit rupee amounts, and clear project / property words ("full home", "wardrobes",
+ * "3BHK flat"). Only fills what the model left empty.
+ */
+/**
+ * Area names the business serves, read from the knowledge base line that lists them
+ * ("Areas served: Hyderabad and Secunderabad (Kondapur, Gachibowli, ...)").
+ */
+export function knownAreas(knowledgeBase: string): string[] {
+  const line = knowledgeBase.split('\n').find((l) => /\b(areas?|locations?|localities|cities)\b[^:]*:/i.test(l));
+  if (!line) return [];
+  return [
+    ...new Set(
+      line
+        .slice(line.indexOf(':') + 1)
+        .split(/[,()/;]|\band\b|\bnearby\b/i)
+        .map((s) => s.trim())
+        .filter((s) => /^[A-Z][\p{L} .'-]{2,30}$/u.test(s)),
+    ),
+  ];
+}
+
+function fillObviousSlots(turn: AiTurn, latest: string, today: string, areas: string[] = []): AiTurn {
   const t = { ...turn };
+  const lower = latest.toLowerCase();
+  if (!t.location) {
+    // Most specific first (Kondapur before Hyderabad); combine locality + city if both named.
+    const found = areas.filter((a) => new RegExp(`\\b${a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(latest));
+    if (found.length) t.location = found.sort((a, b) => areas.indexOf(b) - areas.indexOf(a)).join(', ');
+  }
+  if (!NOT_AN_ANSWER.test(latest) || /\b(need|want|looking for|interested in)\b/i.test(latest)) {
+    if (!t.project_type) {
+      const order = ['full_home', 'kitchen', 'wardrobe', 'living_room', 'bedroom', 'renovation'] as const;
+      t.project_type = order.find((k) => EVIDENCE.project_type[k].test(lower) && !(k === 'full_home' && /\bfull (budget|payment)\b/.test(lower))) ?? null;
+    }
+    if (!t.property_type) {
+      const order = ['villa', 'independent_house', 'commercial', 'apartment'] as const;
+      t.property_type = order.find((k) => EVIDENCE.property_type[k].test(lower)) ?? null;
+    }
+    if (!t.property_size) t.property_size = latest.match(/\b\d\s*bhk\b/i)?.[0].toUpperCase().replace(/\s+/, '') ?? null;
+    if (!t.property_status) {
+      // "ready to start / go ahead" is about the customer, not the property.
+      const aboutProperty = lower.replace(/\bready to (start|go|proceed|begin|book|sign)\b/g, '');
+      if (EVIDENCE.property_status.under_construction.test(aboutProperty)) t.property_status = 'under_construction';
+      else if (EVIDENCE.property_status.ready.test(aboutProperty)) t.property_status = 'ready';
+    }
+  }
+  // "Can your designer come tomorrow at 5pm?" is a site-visit request even if the model missed it.
+  if (!t.site_visit_requested && SITE_VISIT.test(lower) && /\?|\b(can|could|please|want|would like|need)\b/i.test(latest)) {
+    t.site_visit_requested = true;
+  }
   if (!t.timeline_text) {
     const s = sentencesOf(latest).find((x) => resolveTimeline(x, today));
     if (s) t.timeline_text = s.replace(/[.!]+$/, '');
@@ -177,6 +227,8 @@ export interface GroundingContext {
   isFirstReply?: boolean;
   /** The AI's previous message, if any. */
   previousReply?: string | null;
+  /** Areas the business serves (from its knowledge base), for location detection. */
+  areas?: string[];
 }
 
 export function postProcessTurn(turn: AiTurn, ctx: GroundingContext): AiTurn {
@@ -188,7 +240,7 @@ export function postProcessTurn(turn: AiTurn, ctx: GroundingContext): AiTurn {
   // asked. Fill that one field from their words if the model missed it.
   if (ctx.grounding && ctx.latestText) {
     if (ctx.previousReply) t = fillAskedSlot(t, askedItem(ctx.previousReply), ctx.latestText);
-    t = fillObviousSlots(t, ctx.latestText, ctx.today);
+    t = fillObviousSlots(t, ctx.latestText, ctx.today, ctx.areas);
   }
 
   if (ctx.grounding) {

@@ -1,5 +1,5 @@
-import { steerReply } from '../ai/checklist.js';
-import { postProcessTurn } from '../ai/grounding.js';
+import { skippedItems, steerReply } from '../ai/checklist.js';
+import { knownAreas, postProcessTurn } from '../ai/grounding.js';
 import { guardReply } from '../ai/replyGuard.js';
 import type { AiTurn } from '../ai/schema.js';
 import { buildSystemPrompt, toChatMessages } from '../ai/prompt.js';
@@ -155,9 +155,13 @@ export async function processLead(deps: EngineDeps, leadId: string): Promise<voi
 
     // 3. AI receptionist
     const history = await repo.recentMessages(leadId, deps.historyLimit);
-    const previousReply = [...history].reverse().find((m) => m.sender_type === 'ai' || m.sender_type === 'system')?.outgoing_message ?? null;
+    // The last thing we said; for slot filling, skip over a fallback/system message so the
+    // customer's answer is matched to the last real question.
+    const ours = [...history].reverse().filter((m) => m.sender_type === 'ai' || m.sender_type === 'system');
+    const previousReply = ours.find((m) => m.outgoing_message?.includes('?'))?.outgoing_message ?? ours[0]?.outgoing_message ?? null;
     const isFirstReply = !history.some((m) => m.sender_type === 'ai');
-    const system = buildSystemPrompt(tenant, lead, localDate(now, tenant.timezone), channel, isFirstReply);
+    const skipped = skippedItems(history);
+    const system = buildSystemPrompt(tenant, lead, localDate(now, tenant.timezone), channel, isFirstReply, skipped);
     const customerText = history
       .filter((m) => m.sender_type === 'customer')
       .map((m) => m.incoming_message ?? '')
@@ -172,6 +176,7 @@ export async function processLead(deps: EngineDeps, leadId: string): Promise<voi
         grounding: deps.factGrounding ?? false,
         isFirstReply,
         previousReply,
+        areas: knownAreas(tenant.knowledge_base),
       });
     } catch (err) {
       log.error({ err, leadId }, 'AI turn failed');
@@ -220,7 +225,7 @@ export async function processLead(deps: EngineDeps, leadId: string): Promise<voi
     }
     // Small-model assist: make sure the reply asks the next missing detail, not an answered one.
     if (deps.factGrounding && !needsHuman) {
-      turn.reply = steerReply(turn.reply, { ...merged, site_visit_requested: siteVisit }, channel, combinedText);
+      turn.reply = steerReply(turn.reply, { ...merged, site_visit_requested: siteVisit }, channel, combinedText, skipped);
     }
 
     const patch: Partial<Lead> = {

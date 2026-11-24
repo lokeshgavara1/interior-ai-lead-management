@@ -3,8 +3,8 @@
  * Every case here comes from real output seen in live testing against the gateway.
  */
 import { describe, expect, it } from 'vitest';
-import { askedItem, isParroting, steerReply } from '../src/ai/checklist.js';
-import { fillAskedSlot, postProcessTurn, tidyReply } from '../src/ai/grounding.js';
+import { askedItem, isParroting, skippedItems, steerReply } from '../src/ai/checklist.js';
+import { fillAskedSlot, knownAreas, postProcessTurn, tidyReply } from '../src/ai/grounding.js';
 import { AiOutputError, parseAiTurnLenient } from '../src/ai/llm.js';
 import { extractJson, repairAiOutput } from '../src/ai/repair.js';
 import { guardReply, hasUnapprovedPrice, QUOTE_LINE, sentencesOf, VISIT_LINE } from '../src/ai/replyGuard.js';
@@ -238,6 +238,75 @@ describe('reply steering (small models)', () => {
 
   it('leaves Indic-script conversations alone', () => {
     expect(steerReply('మీ ఫ్లాట్ ఎక్కడ ఉంది?', lead({ location: 'K' }), 'whatsapp', 'నమస్కారం')).toBe('మీ ఫ్లాట్ ఎక్కడ ఉంది?');
+  });
+});
+
+describe('fixes from the first live test-plan run (24 Nov)', () => {
+  it('an essay-length reply is shortened instead of failing the turn (L1-L3 fallback)', () => {
+    const essay = `Great! ${'Here is a detailed breakdown of the costs for your home. '.repeat(30)}Which rooms do you need?`;
+    const t = parseAiTurnLenient(JSON.stringify({ reply: essay, budget: 800000 }));
+    expect(t.reply.length).toBeLessThanOrEqual(900);
+    expect(t.budget).toBe(800000);
+  });
+
+  it('a refusal that names its topic is never asked again (L4)', () => {
+    const h = [
+      { sender_type: 'ai', incoming_message: null, outgoing_message: 'Is your property ready for interior work?' },
+      { sender_type: 'customer', incoming_message: 'Not sure about the budget yet', outgoing_message: null },
+    ];
+    expect([...skippedItems(h)]).toEqual(['budget']);
+    const h2 = [
+      { sender_type: 'ai', incoming_message: null, outgoing_message: 'When would you like to start?' },
+      { sender_type: 'customer', incoming_message: "don't know yet", outgoing_message: null },
+    ];
+    expect([...skippedItems(h2)]).toEqual(['timeline']);
+    const lead = { ...EMPTY_FACTS, site_visit_requested: false, location: 'G', property_status: 'ready' } as Lead;
+    const r = steerReply('Thanks! Do you have an approximate budget in mind?', lead, 'whatsapp', 'Not sure about the budget yet', new Set(['budget', 'timeline']));
+    expect(askedItem(r)).toBe('project_type');
+  });
+
+  it('does not split sentences at "e.g." (X1 broken reply)', () => {
+    expect(sentencesOf('Could you tell me the type and size (e.g. 3BHK apartment)? Thanks.')).toEqual([
+      'Could you tell me the type and size (e.g. 3BHK apartment)?',
+      'Thanks.',
+    ]);
+  });
+
+  it('"Can your designer come tomorrow at 5pm?" is a site-visit request (X1)', () => {
+    const t = postProcessTurn(aiTurn(), { customerText: 'Can your designer come tomorrow at 5pm?', latestText: 'Can your designer come tomorrow at 5pm?', today: TODAY, grounding: true });
+    expect(t.site_visit_requested).toBe(true);
+    const lead = { ...EMPTY_FACTS, site_visit_requested: true, location: 'K' } as Lead;
+    const r = steerReply('Thanks for the details! Which type of property is it?', lead, 'whatsapp', 'Can your designer come tomorrow at 5pm?');
+    expect(r.startsWith(VISIT_LINE)).toBe(true);
+  });
+
+  it('recognises served areas from the knowledge base (X1 re-asked "Kondapur", L6 Hinglish)', () => {
+    const kb = 'Areas served: Hyderabad and Secunderabad (Kondapur, Gachibowli, Madhapur and nearby).';
+    const areas = knownAreas(kb);
+    expect(areas).toEqual(['Hyderabad', 'Secunderabad', 'Kondapur', 'Gachibowli', 'Madhapur']);
+    const run = (msg: string) => postProcessTurn(aiTurn(), { customerText: msg, latestText: msg, today: TODAY, grounding: true, areas }).location;
+    expect(run('Hi, 3BHK in Kondapur, ready, full home')).toBe('Kondapur');
+    expect(run('Namaste, mujhe 2BHK ke liye interiors chahiye, Gachibowli mein')).toBe('Gachibowli');
+    expect(run('Kondapur, Hyderabad')).toBe('Kondapur, Hyderabad');
+    expect(run('Hi, need a kitchen')).toBeNull();
+  });
+
+  it('reads readiness from a message with several facts (X1), but not "ready to start"', () => {
+    const run = (msg: string) => postProcessTurn(aiTurn(), { customerText: msg, latestText: msg, today: TODAY, grounding: true });
+    expect(run('Hi, 3BHK in Kondapur, ready, full home, budget 8 lakhs, start next month')).toMatchObject({
+      property_status: 'ready',
+      property_type: 'apartment',
+      property_size: '3BHK',
+      project_type: 'full_home',
+      budget: 800000,
+    });
+    expect(run('flat is still under construction')).toMatchObject({ property_status: 'under_construction' });
+    expect(run('I am ready to start the project').property_status).toBeNull();
+  });
+
+  it('reads obvious project/property words from the message (L7b "need wardrobes", X1 "3BHK")', () => {
+    const t = postProcessTurn(aiTurn(), { customerText: 'Hi, need wardrobes for my 3BHK flat', latestText: 'Hi, need wardrobes for my 3BHK flat', today: TODAY, grounding: true });
+    expect(t).toMatchObject({ project_type: 'wardrobe', property_type: 'apartment', property_size: '3BHK' });
   });
 });
 

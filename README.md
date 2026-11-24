@@ -44,12 +44,12 @@ Chatbot/
 │   │   ├── db/               Repo interface + Supabase implementation
 │   │   ├── channels/         WhatsApp, Meta Graph (Instagram + Lead Ads), Google Sheets
 │   │   ├── ai/               Prompt, schema, OpenAI-compatible client, repair, grounding, reply guard, checklist steering
-│   │   ├── cli/chat.ts       Local chat with the receptionist (npm run chat)
+│   │   ├── cli/              Local chat (npm run chat) and live AI test plan (npm run test:live)
 │   │   ├── engine/           Conversation, scoring, merge, opt-out, debouncing inbox, ingest, sales workflow
 │   │   ├── notify/           Sales alerts (WhatsApp template/text + email)
 │   │   ├── jobs/             Follow-ups, overdue alerts, Google Sheets sync
 │   │   └── lib/              Phone, signatures, budget parsing, time zones
-│   ├── test/                 156 tests (in-memory fakes for every external service)
+│   ├── test/                 163 tests (in-memory fakes for every external service)
 │   └── Dockerfile
 ├── supabase/
 │   ├── migrations/0001_init.sql            Core schema, constraints, RLS, claim functions
@@ -103,6 +103,11 @@ npm run chat
 npm run chat -- "Hi, 3BHK in Kondapur" "It is ready" "Around 8 lakhs"
 ```
 Interactive commands: `/lead` (show the lead record), `/history`, `/reset`, `/quit`.
+
+### Live AI test plan
+`npm run test:live` plays the test-plan scenarios against the real model and checks each outcome
+(data, alerts, no prices, no booking claims, one question per reply). Run one scenario with
+`npm run test:live -- L4`. Current result: 68/68 on `mistral:7b`.
 
 ## AI model
 

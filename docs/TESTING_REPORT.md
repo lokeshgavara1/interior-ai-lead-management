@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Date | 23 Nov 2026 |
+| Date | 24 Nov 2026 |
 | Build | backend 0.1.0 |
 | Environment | Windows 10, Node 24.12, TypeScript 7.0.2, Vitest 5.1.1 |
-| Command | `cd backend && npm run typecheck && npm test` |
-| Result | **156 / 156 automated tests passed**; type-check clean (source + tests). Live AI tests on `mistral:7b`: see §2a |
+| Commands | `npm run typecheck`, `npm test`, `npm run test:live` (in `backend/`) |
+| Result | **163 / 163 automated tests passed**, type-check clean. **Live AI test plan: 68 / 68 checks passed** on `mistral:7b` (§2a). Database migrations: 8 / 8 checks passed on Postgres (§2b). |
 
 ## 1. Scope and method
 
@@ -25,7 +25,7 @@ live third-party behaviour or the quality of the AI's wording. Those are covered
 | New customer enquiry | Create a new CRM record | engine › new customer enquiry creates a new CRM record and replies | ✅ Pass |
 | Returning customer | Update existing lead | engine › returning customer updates the existing lead and keeps earlier facts | ✅ Pass |
 | Customer provides budget | Save budget correctly | engine › customer provides budget — saved correctly as a number | ✅ Pass |
-| Customer skips a question | Continue naturally | — (conversation behaviour of the AI) | ⏳ Live test L4 |
+| Customer skips a question | Continue naturally | small-model › a refusal is never asked again; live §2a L4 | ✅ Pass (automated + live) |
 | Customer asks about price | Use approved pricing or escalate | small-model › reply guard (invented prices removed, quotation line on price questions); live §2a | ✅ Pass (automated + live) |
 | Customer requests site visit | Notify sales team | engine › customer requests site visit — sales team notified once | ✅ Pass |
 | Customer asks for human | Escalate conversation | engine › escalated and AI paused; small-model › escalates even when the model misses it; live §2a | ✅ Pass |
@@ -35,20 +35,55 @@ live third-party behaviour or the quality of the AI's wording. Those are covered
 | Customer opts out | Stop automated messages | engine › confirmed, no AI call, follow-ups stopped; unit › isOptOut (9 tests) | ✅ Pass |
 | Customer converts | Stop lead follow-ups | engine › customer converts — follow-ups stop; unit › decideFollowup | ✅ Pass |
 
-**11 of 12 pass automatically. "Customer skips a question" depends on the live model: see §2a and live test L4.**
+**All 12 spec §12 cases pass automatically; the AI-behaviour cases are also confirmed live in §2a.**
 
-## 2a. Live AI results — `mistral:7b` on the private gateway (23 Nov 2026)
+## 2a. Live AI test plan — `mistral:7b` on the private gateway (24 Nov 2026)
 
-Run with `npm run chat` (real prompt, engine, scoring and alerts; in-memory database; no WhatsApp).
-Settings: `LLM_JSON_MODE=json_schema`, `LLM_FACT_GROUNDING=true`.
+Command: `cd backend && npm run test:live`. It runs the real prompt, engine, scoring, assignment and alerts against
+the real model, with an in-memory database and a fake WhatsApp. Each scenario prints its transcript and
+checks the outcome automatically. Settings: `LLM_JSON_MODE=json_schema`, `LLM_FACT_GROUNDING=true`.
 
-| Scenario | Result |
-|---|---|
-| Spec §4.3 sample conversation (7 turns) | ✅ One question per turn in spec order. Final lead: Kondapur, ready, start 2026-12-01, ₹8,00,000, full home, Rahul, site visit → **100 / Hot / qualified**, assigned. Hot-lead and site-visit alerts sent once each. ~4–8 s per reply. |
-| Price question ("how much for a 2BHK?") | ✅ Approved quotation line, no amount, then the next question |
-| "I want to talk to a real person, not a bot" | ✅ Handoff reply, AI paused, team alerted |
-| "STOP" | ✅ Confirmation, opted out, no AI call |
-| Hinglish ("…2BHK flat… Gachibowli mein") | ⚠️ Replies in English and missed "Gachibowli" on the first message (7B limitation) |
+Every scenario also checks:
+- no invented prices
+- no booking claims
+- at most one question per reply
+- no AI failures
+- average reply time
+
+| Scenario | Checks | Result |
+|---|---|---|
+| L1–L3 Full qualification (spec §4.3 conversation, 7 turns) | 18 | ✅ Kondapur, ready, start 2026-12-01, ₹8,00,000, full home, Rahul, site visit → **100 / Hot / qualified**, assigned; hot-lead and site-visit alerts exactly once |
+| L4 Customer skips a question ("Not sure about the budget yet") | 8 | ✅ Budget stays empty, not asked again, conversation continues |
+| L5 Price question | 6 | ✅ Approved quotation line, no amount |
+| L6 Hinglish ("…2BHK flat… Gachibowli mein") | 7 | ✅ Location and property captured; reply is in English |
+| L7 "I want to talk to a real person, not a bot" | 8 | ✅ Handoff reply, AI paused, team alerted |
+| L7b Customer writes again after handoff | 6 | ✅ AI stays silent |
+| L8 "STOP" | 8 | ✅ Confirmed, opted out, no follow-up |
+| X1 "Can your designer come tomorrow at 5pm?" | 7 | ✅ Visit recorded and alerted, no booking claim; all 6 facts read from one message |
+| **Total** | **68** | **68 / 68 passed** |
+
+**How we got here.** The first run of this plan passed 63/67. Its four failures were real defects, each now fixed and covered by a unit test:
+1. A reply over 1,000 characters (a cost-breakdown essay after the budget) failed the whole turn. It is now shortened at a sentence boundary.
+2. "Not sure about the budget yet" was followed by the budget question again. Refusals are now tracked by topic.
+3. "Can your designer come tomorrow?" wasn't recognised as a site-visit request.
+4. A reply was broken at "e.g." by the sentence splitter.
+
+The rerun also added area recognition from the business's "Areas served" list (fixes Hinglish and "3BHK in Kondapur") and readiness detection from multi-fact messages.
+
+## 2b. Database migrations (24 Nov 2026)
+
+Both migrations and the seed run cleanly on Postgres (PGlite, with a stub of Supabase's `auth` schema). Checks:
+- duplicate phone and duplicate Instagram id are ignored
+- a lead with no contact details is rejected
+- a webhook message is stored once and claimed atomically (2 claimed, then 0)
+- messages stuck in "processing" are reset for retry
+- an invalid status is rejected
+- a duplicate alert is ignored
+- the `updated_at` trigger works
+
+**8 / 8 passed.**
+
+### Earlier live findings (23 Nov)
 
 What the safeguards caught **in live runs** (before they existed, these reached the "customer"):
 - an invented price list ("Kitchen: INR 1.5 lakhs … Total: INR 7 lakhs")
@@ -60,9 +95,9 @@ What the safeguards caught **in live runs** (before they existed, these reached 
 - "next month" resolved as 2027-01-01
 
 Known limitations with `mistral:7b`:
-- Wording is sometimes clumsy (e.g. "Here's a suggested design concept…" with no concept attached).
-- Hindi/Telugu conversations are weak.
-- 4 of roughly 50 live turns (about 1 in 12) took ~30 s and failed during testing. The customer then gets the fallback reply and the team an "AI COULD NOT RESPOND" alert.
+- Wording is sometimes clumsy or wordy, though never unsafe in the final run.
+- Replies are in English even when the customer writes Hinglish. Telugu/Hindi script is not steered.
+- On 23 Nov, 4 of ~50 turns failed after ~30 s; most were the over-long-reply defect fixed on 24 Nov. The final 24 Nov run had **0 failures**, and every scenario's average reply time was under 15 s. Most replies took 4–6 s; the budget turn took up to ~19 s because the model writes a long reply that then gets trimmed. A real gateway outage still produces the fallback reply plus an "AI COULD NOT RESPOND" alert.
 
 `qwen3:32b` on the same gateway was not usable: it hangs with JSON formats and is too slow (over 2 minutes per reply) without them.
 

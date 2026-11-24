@@ -91,6 +91,42 @@ export function itemsFor(channel: Channel): ChecklistItem[] {
   return CHECKLIST.filter((i) => !i.channels || i.channels.includes(channel));
 }
 
+/** The customer declined to answer ("not sure yet", "prefer not to say", "later"). */
+const DECLINE =
+  /\b(not sure|no idea|don'?t know|dont know|not decided|haven'?t decided|undecided|later|skip|prefer not|rather not|not now|no budget|depends|will tell|let me think|no clue|pata nahi|maloom nahi)\b/i;
+
+/**
+ * Items the customer skipped: an AI question about the item followed by a customer
+ * reply that declines it. Spec §12: "Customer skips a question -> continue naturally",
+ * so these are never asked again.
+ */
+/** A refusal that names its topic: "not sure about the budget", "don't know when". */
+const DECLINED_TOPIC: [string, RegExp][] = [
+  ['budget', /\b(budget|cost|spend|amount|price)\b/i],
+  ['timeline', /\b(when|start|date|timeline|month)\b/i],
+  ['name', /\bname\b/i],
+  ['project_type', /\b(rooms?|which areas?|full home|scope)\b/i],
+  ['site_visit', /\b(visit|site)\b/i],
+  ['phone', /\b(number|phone|contact)\b/i],
+];
+
+export function skippedItems(history: { sender_type: string; incoming_message: string | null; outgoing_message: string | null }[]): Set<string> {
+  const skipped = new Set<string>();
+  let lastAsked: string | null = null;
+  for (const m of history) {
+    if (m.sender_type !== 'customer') {
+      if (m.outgoing_message?.includes('?')) lastAsked = askedItem(m.outgoing_message);
+      continue;
+    }
+    const text = m.incoming_message ?? '';
+    if (!DECLINE.test(text)) continue;
+    const named = DECLINED_TOPIC.find(([, re]) => re.test(text))?.[0];
+    const item = named ?? lastAsked;
+    if (item) skipped.add(item);
+  }
+  return skipped;
+}
+
 export const CLOSING_LINE = 'Our design team will contact you shortly to discuss the design and arrange the next steps.';
 
 /** Scripts we don't have English fallback questions for — never overwrite those replies. */
@@ -104,7 +140,7 @@ const INDIC_SCRIPT = /[ऀ-෿]/;
  * Returns the reply unchanged when it is fine, or when the customer writes in an Indic script.
  */
 const CUSTOMER_QUESTION = /\?|\b(do you|can you|could you|is it|are you|what|which|how|why|where|when|price|cost)\b/i;
-const VISIT_QUESTION = /\b(visit|come (and )?(see|check)|come over|site)\b/i;
+const VISIT_QUESTION = /\b(visit|come (and )?(see|check)|come over|site|come (by|tomorrow|today|on|at|this|next))\b|\b(designer|someone|team) (can |could |to )?come\b/i;
 
 function words(s: string): string[] {
   return s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
@@ -118,9 +154,16 @@ export function isParroting(reply: string, customerLatest: string): boolean {
   return r.filter((w) => c.has(w)).length / r.length >= 0.7;
 }
 
-export function steerReply(reply: string, merged: Lead, channel: Channel, customerLatest: string): string {
+export function steerReply(
+  reply: string,
+  merged: Lead,
+  channel: Channel,
+  customerLatest: string,
+  skipped: Set<string> = new Set(),
+): string {
   if (INDIC_SCRIPT.test(customerLatest) || INDIC_SCRIPT.test(reply)) return reply;
-  const items = itemsFor(channel);
+  // A skipped item counts as "done" for asking purposes.
+  const items = itemsFor(channel).map((i) => (skipped.has(i.id) ? { ...i, known: () => true } : i));
   const next = items.find((i) => !i.known(merged));
   const first = merged.customer_name ? `, ${merged.customer_name.split(' ')[0]}` : '';
   reply = fixRunOn(reply);
@@ -141,6 +184,9 @@ export function steerReply(reply: string, merged: Lead, channel: Channel, custom
     if (VISIT_QUESTION.test(customerLatest) && !CLOSING_OR_VISIT.test(reply)) return `Thank you${first}! ${VISIT_LINE} ${CLOSING_LINE}`;
   } else if (isParroting(reply, customerLatest)) {
     return `Thank you${first}! ${next.question}`;
+  } else if (VISIT_QUESTION.test(customerLatest) && /\?|\b(can|could|come)\b/i.test(customerLatest) && !CLOSING_OR_VISIT.test(reply)) {
+    // They asked for a visit while details are still missing: acknowledge it, then continue.
+    return `${VISIT_LINE} ${next.question}`;
   }
 
   const sentences = sentencesOf(reply);

@@ -41,6 +41,19 @@ function cleanString(v: unknown): string | null {
   return s === '' || PLACEHOLDER.test(s) ? null : s;
 }
 
+/**
+ * Small models sometimes write essays (e.g. a cost breakdown after hearing the budget).
+ * Cut to the last full sentence under the limit instead of failing the whole turn,
+ * so the extracted facts are kept; the reply guard then removes prices and rambling.
+ */
+const MAX_REPLY = 900;
+function shorten(reply: string): string {
+  if (reply.length <= MAX_REPLY) return reply;
+  const cut = reply.slice(0, MAX_REPLY);
+  const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '), cut.lastIndexOf('\n'));
+  return (end > 100 ? cut.slice(0, end + 1) : cut).trim();
+}
+
 function cleanBool(v: unknown): boolean {
   if (typeof v === 'boolean') return v;
   if (typeof v === 'string') return ['true', 'yes', 'y', '1'].includes(v.trim().toLowerCase());
@@ -55,7 +68,7 @@ export function repairAiOutput(raw: unknown): Record<string, unknown> {
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   // Some models rename "reply" or leave it empty. Keep the extracted facts anyway with a
   // neutral acknowledgement; reply steering then adds the next question.
-  const reply = cleanString(o.reply ?? o.response ?? o.message ?? o.answer ?? o.Assistant ?? o.assistant) ?? 'Thank you!';
+  const reply = shorten(cleanString(o.reply ?? o.response ?? o.message ?? o.answer ?? o.Assistant ?? o.assistant) ?? 'Thank you!');
 
   const intentRaw = cleanString(o.intent)?.toLowerCase().replace(/[\s-]+/g, '_');
   const intent = intentRaw && (INTENTS as readonly string[]).includes(intentRaw) ? intentRaw : 'other';
