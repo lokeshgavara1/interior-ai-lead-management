@@ -7,6 +7,7 @@ so one deployment can serve many interior businesses.
 | Document | For |
 |---|---|
 | [docs/Client_Setup_and_Deployment_Guide.docx](docs/Client_Setup_and_Deployment_Guide.docx) | Client-facing: credentials checklist, step-by-step deployment, go-live checks |
+| [docs/Test_Results_Report.docx](docs/Test_Results_Report.docx) | Client-facing: test results, live conversation showcase, quality improvements |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setting up Supabase, Meta, Google Sheets, the server; go-live checklist |
 | [docs/TESTING_REPORT.md](docs/TESTING_REPORT.md) | Automated results, spec §12 mapping, live test plan |
 | [docs/HANDOVER.md](docs/HANDOVER.md) | Business owner and sales team: daily use, Sheet, settings, troubleshooting |
@@ -50,7 +51,7 @@ Chatbot/
 │   │   ├── notify/           Sales alerts (WhatsApp template/text + email)
 │   │   ├── jobs/             Follow-ups, overdue alerts, Google Sheets sync
 │   │   └── lib/              Phone, signatures, budget parsing, time zones
-│   ├── test/                 163 tests (in-memory fakes for every external service)
+│   ├── test/                 168 tests (in-memory fakes for every external service)
 │   └── Dockerfile
 ├── supabase/
 │   ├── migrations/0001_init.sql            Core schema, constraints, RLS, claim functions
@@ -108,7 +109,7 @@ Interactive commands: `/lead` (show the lead record), `/history`, `/reset`, `/qu
 ### Live AI test plan
 `npm run test:live` plays the test-plan scenarios against the real model and checks each outcome
 (data, alerts, no prices, no booking claims, one question per reply). Run one scenario with
-`npm run test:live -- L4`. Current result: 68/68 on `mistral:7b`.
+`npm run test:live -- L4`. Development result: 84/84 on the `mistral:7b` test server. Run it again with the production OpenAI key.
 
 ## AI model
 
@@ -121,7 +122,8 @@ Any **OpenAI-compatible** chat API works (OpenAI, Ollama, vLLM, private gateways
 | `LLM_JSON_MODE` | `json_schema` (server enforces the schema; best), `json_object`, or `prompt` (schema described in the prompt) |
 | `LLM_FACT_GROUNDING` | `true` turns on **small-model mode** (below). Use it for 7B-class models. |
 
-The current setup is the private gateway with `mistral:7b` (Ollama), `json_schema` mode and grounding on.
+**Production uses OpenAI** (`OPENAI_BASE_URL` empty, `LLM_FACT_GROUNDING=false`; verify with `npm run test:live`).
+Development testing used a private test server running `mistral:7b` (Ollama) with grounding on.
 
 **Safety guards for all models** (`ai/replyGuard.ts`, `engine/optout.ts`):
 - invented prices and discounts are removed

@@ -45,6 +45,13 @@ const SITE_VISIT =
   /\b(visit|come (and )?(see|check)|come over|come home|come (by|tomorrow|today|on|at|this|next)|inspect|measure|measurement|site)\b|\b(designer|someone|team|you) (can |could |to )?come\b/i;
 const BUDGET_HINT = /\d|lakh|lac|crore|\bcr\b|\bk\b|₹|\brs\b/;
 
+/** Money amounts the customer wrote ("8 lakhs", "₹8,00,000", "10-15 lakh", "50k", "800000"). */
+const MONEY_PHRASE =
+  /(?:₹|\brs\.?|\binr\b)\s*[\d,.]+(?:\s*(?:lakhs?|lacs?|crores?|cr|k))?|\b\d+(?:\.\d+)?(?:\s*(?:-|to|–)\s*\d+(?:\.\d+)?)?\s*(?:lakhs?|lacs?|l\b|crores?|cr\b|k\b|thousand)|\b\d{1,3}(?:,\d{2,3})+\b|\b\d{5,9}\b/gi;
+export function statedBudgets(customerText: string): number[] {
+  return (customerText.match(MONEY_PHRASE) ?? []).map((m) => parseBudgetInr(m)).filter((v): v is number => v != null && v >= 10_000);
+}
+
 function digits(s: string) {
   return s.replace(/\D/g, '');
 }
@@ -267,7 +274,11 @@ export function postProcessTurn(turn: AiTurn, ctx: GroundingContext): AiTurn {
     if (t.property_type && !EVIDENCE.property_type[t.property_type].test(text)) t.property_type = null;
     if (t.project_type && !EVIDENCE.project_type[t.project_type].test(text)) t.project_type = null;
     if (t.property_status && !EVIDENCE.property_status[t.property_status].test(text)) t.property_status = null;
-    if (t.budget != null && !BUDGET_HINT.test(text)) t.budget = null;
+    // Budget: keep only if the customer actually stated an amount close to it
+    // (any digit is not enough: "3BHK" let a guessed budget through in live testing).
+    // If the model's figure doesn't match, use the latest amount the customer wrote.
+    const stated = statedBudgets(ctx.customerText);
+    if (t.budget != null && !stated.some((b) => Math.abs(b - t.budget!) <= b * 0.2)) t.budget = stated.at(-1) ?? null;
     if (t.site_visit_requested && !SITE_VISIT.test(text)) t.site_visit_requested = false;
     if (t.timeline_text && !mentioned(t.timeline_text, text)) t.timeline_text = null;
   }

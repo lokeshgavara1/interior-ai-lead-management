@@ -225,7 +225,7 @@ export async function processLead(deps: EngineDeps, leadId: string): Promise<voi
     }
     // Small-model assist: make sure the reply asks the next missing detail, not an answered one.
     if (deps.factGrounding && !needsHuman) {
-      turn.reply = steerReply(turn.reply, { ...merged, site_visit_requested: siteVisit }, channel, combinedText, skipped);
+      turn.reply = steerReply(turn.reply, { ...merged, site_visit_requested: siteVisit }, channel, combinedText, skipped, ours[0]?.outgoing_message ?? null);
     }
 
     const patch: Partial<Lead> = {

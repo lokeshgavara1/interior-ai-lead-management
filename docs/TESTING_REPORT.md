@@ -6,7 +6,7 @@
 | Build | backend 0.1.0 |
 | Environment | Windows 10, Node 24.12, TypeScript 7.0.2, Vitest 5.1.1 |
 | Commands | `npm run typecheck`, `npm test`, `npm run test:live` (in `backend/`) |
-| Result | **163 / 163 automated tests passed**, type-check clean. **Live AI test plan: 68 / 68 checks passed** on `mistral:7b` (§2a). Database migrations: 8 / 8 checks passed on Postgres (§2b). |
+| Result | **168 / 168 automated tests passed**, type-check clean. **Live AI test plan: 84 / 84 checks passed** on the `mistral:7b` development test server (§2a); production uses OpenAI and the plan is re-run with that key at go-live. Database migrations: 8 / 8 checks passed on Postgres (§2b). |
 
 ## 1. Scope and method
 
@@ -37,7 +37,7 @@ live third-party behaviour or the quality of the AI's wording. Those are covered
 
 **All 12 spec §12 cases pass automatically; the AI-behaviour cases are also confirmed live in §2a.**
 
-## 2a. Live AI test plan — `mistral:7b` on the private gateway (24 Nov 2026)
+## 2a. Live AI test plan — `mistral:7b` development test server (24 Nov 2026)
 
 Command: `cd backend && npm run test:live`. It runs the real prompt, engine, scoring, assignment and alerts against
 the real model, with an in-memory database and a fake WhatsApp. Each scenario prints its transcript and
@@ -47,20 +47,22 @@ Every scenario also checks:
 - no invented prices
 - no booking claims
 - at most one question per reply
+- no unfinished announcements ("Here's a plan:" with nothing after it)
+- the AI never speaks as the customer
 - no AI failures
 - average reply time
 
 | Scenario | Checks | Result |
 |---|---|---|
-| L1–L3 Full qualification (spec §4.3 conversation, 7 turns) | 18 | ✅ Kondapur, ready, start 2026-12-01, ₹8,00,000, full home, Rahul, site visit → **100 / Hot / qualified**, assigned; hot-lead and site-visit alerts exactly once |
-| L4 Customer skips a question ("Not sure about the budget yet") | 8 | ✅ Budget stays empty, not asked again, conversation continues |
-| L5 Price question | 6 | ✅ Approved quotation line, no amount |
-| L6 Hinglish ("…2BHK flat… Gachibowli mein") | 7 | ✅ Location and property captured; reply is in English |
-| L7 "I want to talk to a real person, not a bot" | 8 | ✅ Handoff reply, AI paused, team alerted |
-| L7b Customer writes again after handoff | 6 | ✅ AI stays silent |
-| L8 "STOP" | 8 | ✅ Confirmed, opted out, no follow-up |
-| X1 "Can your designer come tomorrow at 5pm?" | 7 | ✅ Visit recorded and alerted, no booking claim; all 6 facts read from one message |
-| **Total** | **68** | **68 / 68 passed** |
+| L1–L3 Full qualification (spec §4.3 conversation, 7 turns) | 20 | ✅ Kondapur, ready, start 2026-12-01, ₹8,00,000, full home, Rahul, site visit → **100 / Hot / qualified**, assigned; hot-lead and site-visit alerts exactly once |
+| L4 Customer skips a question ("Not sure about the budget yet") | 10 | ✅ Budget stays empty, not asked again; "No problem!" and a reworded next question |
+| L5 Price question | 8 | ✅ Approved quotation line, no amount |
+| L6 Hinglish ("…2BHK flat… Gachibowli mein") | 9 | ✅ Location and property captured; reply is in English |
+| L7 "I want to talk to a real person, not a bot" | 10 | ✅ Handoff reply, AI paused, team alerted |
+| L7b Customer writes again after handoff | 8 | ✅ AI stays silent |
+| L8 "STOP" | 10 | ✅ Confirmed, opted out, no follow-up |
+| X1 "Can your designer come tomorrow at 5pm?" | 9 | ✅ Visit recorded and alerted, no booking claim; all 6 facts read from one message |
+| **Total** | **84** | **84 / 84 passed** |
 
 **How we got here.** The first run of this plan passed 63/67. Its four failures were real defects, each now fixed and covered by a unit test:
 1. A reply over 1,000 characters (a cost-breakdown essay after the budget) failed the whole turn. It is now shortened at a sentence boundary.
@@ -69,6 +71,12 @@ Every scenario also checks:
 4. A reply was broken at "e.g." by the sentence splitter.
 
 The rerun also added area recognition from the business's "Areas served" list (fixes Hinglish and "3BHK in Kondapur") and readiness detection from multi-fact messages.
+
+Reviewing the full transcripts for the results report found four more wording defects, now fixed and covered by tests and by two new live checks:
+- an unfinished announcement ("Here's a suggested design plan:" with nothing after it)
+- a question repeated word for word, and "Thank you!" in answer to a refusal
+- a guessed budget kept because "3BHK" contains a digit (a budget now needs a matching amount in the customer's words)
+- the model replying as the customer ("I am Rahul. I will design…")
 
 ## 2b. Database migrations (24 Nov 2026)
 

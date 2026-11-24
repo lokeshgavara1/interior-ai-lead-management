@@ -6,11 +6,12 @@
  *   npm run test:live              # all scenarios
  *   npm run test:live -- price     # only scenarios whose name contains "price"
  *   npm run test:live -- L6 X1     # several filters
+ *   npm run test:live -- --json results.json   # also save transcripts and checks as JSON
  *
  * Exit code 1 if any required check fails. "info" checks are reported but never fail.
  */
 import { askedItem } from '../ai/checklist.js';
-import { hasBookingClaim, hasUnapprovedPrice } from '../ai/replyGuard.js';
+import { hasBookingClaim, hasUnapprovedPrice, isDangling, sentencesOf } from '../ai/replyGuard.js';
 import type { Lead } from '../domain/types.js';
 import { FALLBACK_REPLY, HUMAN_HANDOFF_REPLY } from '../engine/conversation.js';
 import { OPT_OUT_CONFIRMATION } from '../engine/optout.js';
@@ -45,12 +46,17 @@ function common(turns: Turn[], lead: Lead | undefined): Check[] {
   const priced = replies.filter((r) => hasUnapprovedPrice(r, `${KB}\n${allCustomer}`, lead?.budget != null ? [lead.budget] : []));
   const booked = replies.filter(hasBookingClaim);
   const multiQ = replies.filter((r) => (r.match(/\?/g) ?? []).length > 1);
+  const dangling = replies.filter((r) => sentencesOf(r).some(isDangling));
+  const name = lead?.customer_name?.split(/\s+/)[0];
+  const asCustomer = replies.filter((r) => name && new RegExp(`\\b(i am|i'm|my name is)\\s+${name}\\b`, 'i').test(r));
   const fallbacks = replies.filter((r) => r === FALLBACK_REPLY).length;
   const avg = turns.reduce((s, t) => s + t.seconds, 0) / Math.max(1, turns.length);
   return [
     { name: 'No invented prices sent', ok: priced.length === 0, detail: priced[0] },
     { name: 'No booking claims sent', ok: booked.length === 0, detail: booked[0] },
     { name: 'At most one question per reply', ok: multiQ.length === 0, detail: multiQ[0] },
+    { name: 'No unfinished announcements ("Here\'s a plan:" with nothing after it)', ok: dangling.length === 0, detail: dangling[0] },
+    { name: 'AI never speaks as the customer', ok: asCustomer.length === 0, detail: asCustomer[0] },
     { name: 'No AI failures (fallback replies)', ok: fallbacks === 0, detail: fallbacks ? `${fallbacks} fallback(s)` : undefined },
     { name: 'Average reply time under 15s', ok: avg < 15, detail: `${avg.toFixed(1)}s`, info: true },
   ];
@@ -159,9 +165,24 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+interface ScenarioResult {
+  id: string;
+  name: string;
+  turns: { customer: string; replies: string[]; alerts: string[]; guards: { action: string; original: string }[]; seconds: number }[];
+  lead: Record<string, unknown> | null;
+  notifications: string[];
+  checks: Check[];
+}
+
 async function run() {
-  const filters = process.argv.slice(2).map((f) => f.toLowerCase());
+  const args = process.argv.slice(2);
+  const jsonIdx = args.indexOf('--json');
+  const jsonPath = jsonIdx >= 0 ? args[jsonIdx + 1] : undefined;
+  if (jsonIdx >= 0) args.splice(jsonIdx, 2);
+  const filters = args.map((f) => f.toLowerCase());
   const scenarios = SCENARIOS.filter((s) => filters.length === 0 || filters.some((f) => `${s.id} ${s.name}`.toLowerCase().includes(f)));
+  const results: ScenarioResult[] = [];
+  const startedAt = new Date();
   const probe = createHarness();
   console.log(c.bold('\nLIVE AI TEST PLAN'));
   console.log(c.dim(`Model: ${probe.cfg.OPENAI_MODEL} @ ${probe.cfg.OPENAI_BASE_URL ?? 'api.openai.com'} | json=${probe.cfg.LLM_JSON_MODE} | grounding=${probe.cfg.LLM_FACT_GROUNDING}`));
@@ -182,6 +203,41 @@ async function run() {
       const detail = !ch.ok && ch.detail ? c.dim(`  → ${ch.detail.slice(0, 160)}`) : '';
       console.log(`   ${mark} ${ch.name}${ch.info && !ch.ok ? c.dim(' (info)') : ''}${detail}`);
     }
+    const l = h.lead();
+    results.push({
+      id: s.id,
+      name: s.name,
+      turns: turns.map((t) => ({
+        customer: t.customer,
+        replies: t.replies,
+        alerts: t.alerts.map((a) => `${a.to}: ${a.text.split('\n')[0]}`),
+        guards: t.guards,
+        seconds: Math.round(t.seconds * 10) / 10,
+      })),
+      lead: l
+        ? {
+            customer_name: l.customer_name,
+            location: l.location,
+            property_type: l.property_type,
+            property_size: l.property_size,
+            project_type: l.project_type,
+            property_status: l.property_status,
+            budget: l.budget,
+            timeline_text: l.timeline_text,
+            expected_start_date: l.expected_start_date,
+            site_visit_requested: l.site_visit_requested,
+            lead_score: l.lead_score,
+            lead_temperature: l.lead_temperature,
+            lead_status: l.lead_status,
+            assigned_salesperson: l.assigned_salesperson,
+            needs_human: l.needs_human,
+            ai_paused: l.ai_paused,
+            opted_out: l.opted_out,
+          }
+        : null,
+      notifications: h.repo.notifications.map((n) => n.kind),
+      checks,
+    });
     summary.push({
       id: s.id,
       name: s.name,
@@ -200,6 +256,28 @@ async function run() {
   const failed = summary.reduce((s, r) => s + r.failed, 0);
   const total = summary.reduce((s, r) => s + r.passed + r.failed, 0);
   console.log(`\n  ${failed === 0 ? c.green('ALL REQUIRED CHECKS PASSED') : c.red(`${failed} REQUIRED CHECK(S) FAILED`)} — ${total - failed}/${total}\n`);
+
+  if (jsonPath) {
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(
+      jsonPath,
+      JSON.stringify(
+        {
+          startedAt: startedAt.toISOString(),
+          finishedAt: new Date().toISOString(),
+          model: probe.cfg.OPENAI_MODEL,
+          jsonMode: probe.cfg.LLM_JSON_MODE,
+          grounding: probe.cfg.LLM_FACT_GROUNDING,
+          requiredPassed: total - failed,
+          requiredTotal: total,
+          scenarios: results,
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(c.dim(`  Results saved to ${jsonPath}\n`));
+  }
   process.exit(failed === 0 ? 0 : 1);
 }
 

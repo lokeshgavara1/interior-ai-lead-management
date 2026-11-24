@@ -4,7 +4,7 @@
  * small-model replies that re-ask answered questions or ask nothing).
  */
 import type { Channel, Lead } from '../domain/types.js';
-import { fixRunOn, PRICE_QUESTION, QUOTE_LINE, sentencesOf, VISIT_LINE } from './replyGuard.js';
+import { dropDangling, fixRunOn, PRICE_QUESTION, QUOTE_LINE, sentencesOf, VISIT_LINE } from './replyGuard.js';
 
 const CLOSING_OR_VISIT = /contact you|call you|reach out|get in touch|confirm a convenient time/i;
 
@@ -14,6 +14,8 @@ export interface ChecklistItem {
   item: string;
   /** Fallback question when steering a reply (English). */
   question: string;
+  /** Different wording, used when the same question must be asked again. */
+  rephrase: string;
   /** Recognises a reply sentence that asks about this item. */
   asks: RegExp;
   known: (lead: Lead) => boolean;
@@ -25,6 +27,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'location',
     item: 'property location (area, city)',
     question: 'Which area is your property in?',
+    rephrase: 'Could you tell me the area or locality of your property?',
     asks: /\b(where|location|located|area|locality|which part|city)\b/i,
     known: (l) => !!l.location,
   },
@@ -32,6 +35,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'property_status',
     item: 'is the property ready for interiors or under construction',
     question: 'Is your property ready for interior work, or is construction still going on?',
+    rephrase: 'Is the property ready to start interiors, or still under construction?',
     asks: /\b(ready|construction|possession|handed over|handover)\b/i,
     known: (l) => !!l.property_status,
   },
@@ -39,6 +43,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'timeline',
     item: 'when they want to start',
     question: 'When would you like to start the interior work?',
+    rephrase: 'Roughly when are you planning to start: this month, next month, or later?',
     asks: /\b(when|start|timeline|begin)\b/i,
     known: (l) => !!(l.timeline_text || l.expected_start_date),
   },
@@ -46,6 +51,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'budget',
     item: 'approximate budget',
     question: 'Do you have an approximate budget in mind for the interiors?',
+    rephrase: 'Do you have a rough budget range in mind?',
     asks: /\b(budget|spend|cost|price range|lakh)\b/i,
     known: (l) => l.budget != null,
   },
@@ -53,6 +59,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'project_type',
     item: 'full home interiors or specific rooms (kitchen, wardrobes, etc.)',
     question: 'Are you looking for full home interiors, or specific areas like the kitchen or wardrobes?',
+    rephrase: 'Which areas would you like us to design: the full home, or specific rooms?',
     asks: /\b(full home|entire|whole|specific (rooms?|areas?)|which rooms?|kitchen|wardrobe|rooms? would you like)\b/i,
     known: (l) => !!l.project_type,
   },
@@ -60,6 +67,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'property_details',
     item: 'property type and size (e.g. 3BHK apartment, villa)',
     question: 'What type and size is the property — for example a 3BHK apartment or a villa?',
+    rephrase: 'Is it an apartment, villa or independent house, and how many bedrooms?',
     asks: /\b(type of (property|home|house)|size|bhk|sq\.? ?ft|square feet|villa|apartment|independent house)\b/i,
     known: (l) => !!(l.property_type && l.property_size),
   },
@@ -67,6 +75,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'name',
     item: 'their name',
     question: 'May I know your name, please?',
+    rephrase: 'Could you share your name so our team knows whom to call?',
     asks: /\b(your name|may i know who|who am i speaking)\b/i,
     known: (l) => !!l.customer_name,
   },
@@ -74,6 +83,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'phone',
     item: 'a phone/WhatsApp number for the design team',
     question: 'Could you share a phone or WhatsApp number so our design team can call you?',
+    rephrase: 'What is the best number for our designer to reach you on?',
     asks: /\b(phone|number|whatsapp|contact)\b/i,
     known: (l) => !!l.phone_number,
     channels: ['instagram'],
@@ -82,6 +92,7 @@ export const CHECKLIST: ChecklistItem[] = [
     id: 'site_visit',
     item: 'whether they would like a site visit',
     question: 'Would you like our designer to visit your site?',
+    rephrase: 'Would a site visit help, so our designer can see the space and take measurements?',
     asks: /\b(site visit|visit (your|the) (site|home|flat|property)|come and see)\b/i,
     known: (l) => l.site_visit_requested,
   },
@@ -154,19 +165,74 @@ export function isParroting(reply: string, customerLatest: string): boolean {
   return r.filter((w) => c.has(w)).length / r.length >= 0.7;
 }
 
+/**
+ * Small models sometimes answer AS the customer or as the designer
+ * ("I am Rahul. I will design the full home..."). Drop such sentences; steering then
+ * supplies an acknowledgement and the next question.
+ */
+export function dropRoleConfusion(reply: string, merged: Lead, customerLatest: string): string {
+  const name = merged.customer_name?.split(/\s+/)[0];
+  const asCustomer = new RegExp(`\\b(i am|i'm|im|my name is|this is)\\s+${name ? name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\0'}\\b`, 'i');
+  const firstPersonWork = /\b(i|we)\s*('ll| will| shall)\s+(design|build|create|make|do|handle|complete|deliver|start|finish|renovate)\b|\bi (want|need|would like|prefer|am looking)\b|\bmy (flat|home|house|budget|property)\b/i;
+  const kept = sentencesOf(reply).filter((s) => !asCustomer.test(s) && !firstPersonWork.test(s) && !/^let'?s get started!?$/i.test(s));
+  const result = kept.join(' ').trim();
+  return result || 'Thank you!';
+}
+
+/**
+ * Small-model reply steering (see steerReplyCore), plus two polish rules:
+ *  - if the customer declined something, the reply opens with "No problem!" rather than "Thank you!"
+ *  - a question identical to the one we just asked is reworded instead of repeated
+ */
 export function steerReply(
   reply: string,
   merged: Lead,
   channel: Channel,
   customerLatest: string,
   skipped: Set<string> = new Set(),
+  previousReply: string | null = null,
+): string {
+  if (!INDIC_SCRIPT.test(customerLatest)) reply = dropRoleConfusion(reply, merged, customerLatest);
+  let out = steerReplyCore(reply, merged, channel, customerLatest, skipped);
+  if (INDIC_SCRIPT.test(customerLatest) || INDIC_SCRIPT.test(out)) return out;
+
+  if (DECLINE.test(customerLatest)) {
+    const parts = sentencesOf(out);
+    const first = parts[0] ?? '';
+    if (/^(thank you|thanks|great|perfect|wonderful|noted)[^?]*[.!]$/i.test(first) && first.length <= 40) parts[0] = 'No problem!';
+    else if (!/^no problem/i.test(first)) parts.unshift('No problem!');
+    out = parts.join(' ');
+  }
+
+  if (previousReply) {
+    const lastAsked = [...sentencesOf(previousReply)].reverse().find((s) => s.endsWith('?'));
+    const parts = sentencesOf(out);
+    const qi = parts.findIndex((s) => s.endsWith('?'));
+    if (lastAsked && qi >= 0 && parts[qi]!.toLowerCase() === lastAsked.toLowerCase()) {
+      const id = askedItem(lastAsked);
+      const item = CHECKLIST.find((i) => i.id === id);
+      if (item && item.rephrase.toLowerCase() !== lastAsked.toLowerCase()) {
+        parts[qi] = item.rephrase;
+        out = parts.join(' ');
+      }
+    }
+  }
+  return out;
+}
+
+function steerReplyCore(
+  reply: string,
+  merged: Lead,
+  channel: Channel,
+  customerLatest: string,
+  skipped: Set<string>,
 ): string {
   if (INDIC_SCRIPT.test(customerLatest) || INDIC_SCRIPT.test(reply)) return reply;
   // A skipped item counts as "done" for asking purposes.
   const items = itemsFor(channel).map((i) => (skipped.has(i.id) ? { ...i, known: () => true } : i));
   const next = items.find((i) => !i.known(merged));
   const first = merged.customer_name ? `, ${merged.customer_name.split(' ')[0]}` : '';
-  reply = fixRunOn(reply);
+  reply = dropDangling(fixRunOn(reply)) || 'Thank you!';
   // A price question must get the approved answer, even if the model sidestepped it.
   if (PRICE_QUESTION.test(customerLatest) && !/quot|designer will share|after (the )?site visit/i.test(reply)) {
     const q = sentencesOf(reply).find((s) => s.endsWith('?'));

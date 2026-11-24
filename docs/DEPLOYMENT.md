@@ -13,7 +13,7 @@ can add **1–3 weeks** of waiting, so start step 3 first.
 | Backend (`backend/`) | A VPS (Docker) | Node 22, one container. 1 vCPU / 1 GB RAM is enough for a few businesses. |
 | HTTPS proxy | Same VPS (Caddy) | Free automatic TLS certificates; Meta requires HTTPS webhooks. |
 | Database | Supabase (managed Postgres) | Source of truth for leads, conversations, logs. |
-| AI | Any OpenAI-compatible API | Currently the private gateway with `mistral:7b` (see §5a). |
+| AI | OpenAI (any OpenAI-compatible API works) | Production: your OpenAI account (see §5a). |
 | Messaging | Meta: WhatsApp Cloud API, Instagram Messaging, Facebook Lead Ads | One Meta app; one webhook URL. |
 | Owner CRM view | Google Sheets (optional) | Two-way sync every 2 minutes. |
 | Alert email | Any SMTP provider (optional, recommended) | Backup channel for sales alerts. |
@@ -150,27 +150,27 @@ select website_webhook_secret from tenants where slug = 'demo-interiors';
 
 ## 5a. AI model settings
 
-In `backend/.env`:
+**Production uses OpenAI.** In `backend/.env`:
 ```
-OPENAI_BASE_URL=https://<gateway-host>/v1
-OPENAI_API_KEY=<gateway key>
-OPENAI_MODEL=mistral:7b
+OPENAI_BASE_URL=
+OPENAI_API_KEY=<your OpenAI API key>
+OPENAI_MODEL=<a current OpenAI model with Structured Outputs>
 LLM_JSON_MODE=json_schema
-LLM_FACT_GROUNDING=true
+LLM_FACT_GROUNDING=false
 LLM_TIMEOUT_MS=60000
 ```
-Check it before going live: `cd backend && npm run chat` (needs only these settings).
+Before going live, run the AI test plan with this key: `cd backend && npm run test:live`.
+If any required check fails, set `LLM_FACT_GROUNDING=true` (the configuration that passed 84/84 in
+development) and run it again. The price/booking/human/STOP safety checks are on in both modes.
 
-Measured on the gateway (23 Nov 2026):
+**Development testing** used a separate private test server (`mistral:7b` on Ollama), which is not part of the
+production setup. Results there (23–24 Nov 2026):
 
 | Model | Mode | Result |
 |---|---|---|
-| `mistral:7b` | `json_schema` + grounding | ✅ ~4–8 s per reply. Correct lead data with the small-model safeguards. Occasional slow or failed turns (~30 s) are handled by the fallback reply and alert. |
+| `mistral:7b` | `json_schema` + grounding | ✅ Live test plan 84/84, median about 5 s per reply |
 | `qwen3:32b` | `json_schema` / `json_object` | ❌ Requests hang until timeout (thinking model + format constraint) |
 | `qwen3:32b` | `prompt` | ❌ Over 2 minutes per reply: too slow for chat |
-
-If you switch to a strong hosted model (e.g. OpenAI), set `LLM_FACT_GROUNDING=false` so replies are not
-steered, which keeps full multilingual behaviour.
 
 ---
 

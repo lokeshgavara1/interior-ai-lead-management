@@ -56,6 +56,26 @@ export function sentencesOf(text: string): string[] {
 
 const LISTY = /(^|\n)\s*([*•-]|\d+[.)])\s+/;
 
+/**
+ * Sentences that announce content which is never delivered in a chat reply
+ * ("Here's a suggested layout and design plan for your flat:"), and list numbers
+ * left over after a list was removed ("1.").
+ */
+const DANGLING =
+  /:\s*$|^\s*\d+[.)]?\s*$|\b(here'?s|here is|below is|following is|i'?ll (share|provide|send)|let me (share|give|provide))\b[^.?!]*\b(layout|design|plan|breakdown|list|concept|estimate|quote|options|suggestions|ideas)\b/i;
+
+export function isDangling(sentence: string): boolean {
+  return DANGLING.test(sentence);
+}
+
+/** Remove dangling announcements and orphan list numbers; keeps at least the question. */
+export function dropDangling(reply: string): string {
+  const cleaned = fixRunOn(reply.replace(/\s+\d+[.)]\s*(?=[A-Z])/g, ' '));
+  // A colon followed by a new capitalised sentence also separates sentences here.
+  const parts = cleaned.split(/(?<=:)\s+(?=[\p{Lu}\d])/u).flatMap((chunk) => sentencesOf(chunk));
+  return parts.filter((s) => !isDangling(s)).join(' ');
+}
+
 /** "I will arrange the visit on Saturday", "your appointment is booked" — the AI can't book anything. */
 const BOOKING_CLAIM =
   /\b(i|we)('ll| will| have| shall|'ve)\s+(arrange|schedule|book|fix|confirm|send)[^.?!]*\b(visit|appointment|meeting|designer)\b|\b(visit|appointment|meeting)\s+(is|has been|was)\s+(booked|scheduled|confirmed|fixed|arranged)\b|\b(designer|team|we|i|someone)\s*('ll| will| shall| can)\s+(visit|come|be there|meet you)\b[^.?!]*\b(on|this|tomorrow|today|at|by)\b|\b(we|i) can (arrange|schedule|book|fix)[^.?!]*\b(visit|appointment|meeting)\b[^.?!]*\b(on|this|tomorrow|today|at|by)\b/i;
@@ -109,7 +129,7 @@ export function guardReply(
     return { reply: clean.join(' ') || 'Thank you!', changed: 'price' };
   }
   if (smallModel && (reply.length > 240 || LISTY.test(reply))) {
-    const sentences = sentencesOf(reply.replace(/\n+/g, ' ')).filter((s) => !LISTY.test(s));
+    const sentences = sentencesOf(fixRunOn(reply.replace(/\n+/g, ' '))).filter((s) => !LISTY.test(s) && !isDangling(s));
     const question = sentences.find((s) => s.endsWith('?'));
     const first = sentences[0] && !sentences[0].endsWith('?') && sentences[0].length <= 100 ? sentences[0] : '';
     // If they asked about price, the approved answer must survive the trim.

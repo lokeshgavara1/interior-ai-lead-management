@@ -3,11 +3,11 @@
  * Every case here comes from real output seen in live testing against the gateway.
  */
 import { describe, expect, it } from 'vitest';
-import { askedItem, isParroting, skippedItems, steerReply } from '../src/ai/checklist.js';
-import { fillAskedSlot, knownAreas, postProcessTurn, tidyReply } from '../src/ai/grounding.js';
+import { askedItem, CHECKLIST, dropRoleConfusion, isParroting, skippedItems, steerReply } from '../src/ai/checklist.js';
+import { fillAskedSlot, knownAreas, postProcessTurn, statedBudgets, tidyReply } from '../src/ai/grounding.js';
 import { AiOutputError, parseAiTurnLenient } from '../src/ai/llm.js';
 import { extractJson, repairAiOutput } from '../src/ai/repair.js';
-import { guardReply, hasUnapprovedPrice, QUOTE_LINE, sentencesOf, VISIT_LINE } from '../src/ai/replyGuard.js';
+import { dropDangling, guardReply, hasUnapprovedPrice, QUOTE_LINE, sentencesOf, VISIT_LINE } from '../src/ai/replyGuard.js';
 import { EMPTY_FACTS, type Lead } from '../src/domain/types.js';
 import { HUMAN_HANDOFF_REPLY, processLead } from '../src/engine/conversation.js';
 import type { Inbox } from '../src/engine/inbox.js';
@@ -289,6 +289,62 @@ describe('fixes from the first live test-plan run (24 Nov)', () => {
     expect(run('Namaste, mujhe 2BHK ke liye interiors chahiye, Gachibowli mein')).toBe('Gachibowli');
     expect(run('Kondapur, Hyderabad')).toBe('Kondapur, Hyderabad');
     expect(run('Hi, need a kitchen')).toBeNull();
+  });
+
+  it('rewords a question that would repeat the previous one, and says "No problem!" to a refusal (L4, X1)', () => {
+    const lead = { ...EMPTY_FACTS, site_visit_requested: false, location: 'G', property_status: 'ready' } as Lead;
+    const r = steerReply(
+      'Thank you! When would you like to start the interior work?',
+      lead,
+      'whatsapp',
+      'Not sure about the budget yet',
+      new Set(['budget']),
+      'Great! When would you like to start the interior work?',
+    );
+    expect(r).toBe('No problem! Roughly when are you planning to start: this month, next month, or later?');
+    const lead2 = { ...lead, timeline_text: 'next month', project_type: 'full_home', property_type: 'apartment', property_size: '3BHK' } as Lead;
+    const r2 = steerReply('Sure. May I know your name, please?', lead2, 'whatsapp', 'ok', new Set(['budget']), 'Hello! May I know your name, please?');
+    expect(r2).toBe('Sure. Could you share your name so our team knows whom to call?');
+  });
+
+  it('keeps a budget only if the customer stated a matching amount ("3BHK" is not a budget)', () => {
+    expect(statedBudgets('Hi, I need interiors for my new 3BHK flat. It is ready.')).toEqual([]);
+    expect(statedBudgets('Around 8 lakhs')).toEqual([800000]);
+    expect(statedBudgets('budget ₹8,00,000 for 3BHK')).toEqual([800000]);
+    expect(statedBudgets('10-15 lakh')).toEqual([1250000]);
+    const ctx = (text: string) => ({ customerText: text, latestText: text, today: TODAY, grounding: true });
+    expect(postProcessTurn(aiTurn({ budget: 800000 }), ctx('3BHK flat, ready, start next month')).budget).toBeNull();
+    expect(postProcessTurn(aiTurn({ budget: 800000 }), ctx('Around 8 lakhs')).budget).toBe(800000);
+    expect(postProcessTurn(aiTurn({ budget: 500000 }), ctx('Around 8 lakhs')).budget).toBe(800000); // corrected from the words
+  });
+
+  it('drops replies where the AI speaks as the customer or the designer (live: "I am Rahul. I will design...")', () => {
+    const lead = { ...EMPTY_FACTS, site_visit_requested: false, customer_name: 'Rahul' } as Lead;
+    expect(
+      dropRoleConfusion(
+        "I am Rahul. I will design the full home, including the kitchen. Let's get started! Would you like our designer to visit your site?",
+        lead,
+        "I'm Rahul",
+      ),
+    ).toBe('Would you like our designer to visit your site?');
+    expect(dropRoleConfusion('Thank you, Rahul! Which area is your flat in?', lead, "I'm Rahul")).toBe('Thank you, Rahul! Which area is your flat in?');
+  });
+
+  it('every reworded question is still recognised as the same item (slot filling depends on it)', () => {
+    for (const item of CHECKLIST) expect(askedItem(item.rephrase)).toBe(item.id);
+  });
+
+  it('removes unfinished announcements and orphan list numbers (report showcase run)', () => {
+    expect(dropDangling("Here's a suggested layout and design plan for your flat: Are you looking for full home interiors?")).toBe(
+      'Are you looking for full home interiors?',
+    );
+    expect(dropDangling("Here's a suggested layout and design plan for your flat: 1. May I know your name, please?")).toBe(
+      'May I know your name, please?',
+    );
+    expect(dropDangling('Great choice! Which area is your flat in?')).toBe('Great choice! Which area is your flat in?');
+    const g = guardReply(`Here are some ideas for your home: ${'x '.repeat(130)}\n1. Living room\n2. Kitchen\nMay I know your name?`, 'kb', true);
+    expect(g.reply).not.toMatch(/ideas|1\./);
+    expect(g.reply).toContain('May I know your name?');
   });
 
   it('reads readiness from a message with several facts (X1), but not "ready to start"', () => {
